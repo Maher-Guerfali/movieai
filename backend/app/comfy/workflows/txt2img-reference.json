@@ -1,0 +1,5 @@
+{
+  "name": "txt2img-reference",
+  "description": "Placeholder ComfyUI workflow template. Replace node ids with your production graph.",
+  "inputs": ["positive", "negative", "seed", "steps", "cfg", "width", "height"]
+}

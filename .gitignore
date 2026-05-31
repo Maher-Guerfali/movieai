@@ -1,34 +1,12 @@
-# Secrets
 .env
-.env.local
-*.key
-
-# Python
-__pycache__/
-*.py[cod]
 .venv/
-venv/
+.pydeps/
+movieai.db
+*.db
 *.egg-info/
+__pycache__/
 .pytest_cache/
-
-# Node / Next.js
 node_modules/
 .next/
-out/
 dist/
-npm-debug.log*
-yarn-error.log*
-
-# Data / artifacts
-*.sqlite
-*.db
-/data/
-/storage/
-seed/refs/*.png
-seed/refs/*.jpg
-
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/
-.claude/
+coverage/
