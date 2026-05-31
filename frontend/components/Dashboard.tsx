@@ -18,7 +18,7 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { API_BASE, Asset, EventRecord, Project, ProjectState, Scene, api, bootProject } from "@/lib/api";
+import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
 
@@ -96,7 +96,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!project) return;
-    const wsBase = API_BASE.replace(/^http/, "ws");
+    const wsBase = getApiBase().replace(/^http/, "ws");
     const socket = new WebSocket(`${wsBase}/api/ws/projects/${project.id}`);
     socket.onmessage = () => refresh(project).catch(() => undefined);
     return () => socket.close();
@@ -249,7 +249,7 @@ function Overview({ state, latestImages, onStart }: { state: ProjectState | null
         <div className="thumb-grid">
           {latestImages.map(({ asset, image }) => (
             <figure key={image.id}>
-              <img src={`${API_BASE}${image.url}`} alt={asset.name} />
+              <img src={`${getApiBase()}${image.url}`} alt={asset.name} />
               <figcaption>{asset.name}</figcaption>
             </figure>
           ))}
@@ -297,7 +297,7 @@ function AssetWorkspace({ title, assets, selectedAsset, onSelect, onAction }: { 
               <h3>Generated Images</h3>
               <div className="image-stack">
                 {selectedAsset.images.map((image) => (
-                  <img key={image.id} src={`${API_BASE}${image.url}`} alt={selectedAsset.name} />
+                  <img key={image.id} src={`${getApiBase()}${image.url}`} alt={selectedAsset.name} />
                 ))}
               </div>
               <div className="button-row">

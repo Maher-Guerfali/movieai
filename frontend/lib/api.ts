@@ -1,4 +1,17 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+declare global {
+  interface Window {
+    __MOVIEAI_CONFIG__?: {
+      API_BASE_URL?: string;
+    };
+  }
+}
+
+export function getApiBase(): string {
+  if (typeof window !== "undefined") {
+    return window.__MOVIEAI_CONFIG__?.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  }
+  return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+}
 
 export type Project = {
   id: string;
@@ -89,7 +102,7 @@ export type ProjectState = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${getApiBase()}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
