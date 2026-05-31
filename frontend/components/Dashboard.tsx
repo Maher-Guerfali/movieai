@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
+import ChatAssistant from "@/components/ChatAssistant";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
 
@@ -135,6 +136,7 @@ export default function Dashboard() {
 
   return (
     <div className="studio-shell">
+      <ChatAssistant projectId={project?.id} onActed={() => refresh(project).catch(() => undefined)} />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Wand2 size={20} /></div>

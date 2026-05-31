@@ -40,11 +40,38 @@ npm run dev
 
 The frontend creates/seeds the first project automatically. Press **Start** to run the deterministic seed production loop.
 
-## Current MVP Behavior
+## Conversational Assistant + Mediator
 
-`USE_MOCK_AI=true` is the default. That means the app runs without GPT, Claude, Gemini, MinIO, or ComfyUI credentials and produces stable seed outputs for UI and orchestration development.
+A live chat assistant is docked in the **top-left** of the dashboard. It:
 
-To connect real services, replace the provider stubs in `backend/app/providers/`, wire the ComfyUI workflow in `backend/app/comfy/workflows/`, and set the keys/URLs in `.env`.
+- Answers questions about the website and the current production (scenes,
+  characters, environments, props, tasks, agent activity).
+- Acts on your behalf: when you ask for a change, the **mediator agent** applies
+  it to the shared production tree the always-on agents work from
+  (pause/resume, change style, update an asset brief, regenerate / approve /
+  reject an asset).
+
+Backend pieces:
+
+- `backend/app/providers/` — real `OpenAIProvider` and `GeminiProvider`, plus a
+  `factory.get_provider()` that selects one from `.env` (falling back to the
+  mock provider if no key is set).
+- `backend/app/agents/assistant.py` — the conversational agent (returns a reply
+  plus structured actions).
+- `backend/app/agents/mediator.py` — applies those actions to the production tree.
+- Endpoints: `POST /api/projects/{id}/chat` and `GET /api/projects/{id}/chat`.
+
+## Mock vs. real AI
+
+`USE_MOCK_AI` controls whether real provider keys are used. With the keys set in
+`.env` and `USE_MOCK_AI=false` (the new default), the chat assistant and mediator
+call GPT (or Gemini, via `DEFAULT_LLM_PROVIDER`). Set `USE_MOCK_AI=true` to run
+the deterministic seed loop with no credentials.
+
+> Note: the seed **writer / art_director / critic** loop still produces
+> deterministic seed data and mock ComfyUI references. Wiring those to live
+> models + a real ComfyUI workflow is the next milestone; the provider layer is
+> now in place for it.
 
 ## Repository Map
 

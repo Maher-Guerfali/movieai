@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebS
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.agents.assistant import run_assistant
+from app.agents.mediator import apply_actions
 from app.api.utils import to_asset_out, to_project_out
 from app.db.session import get_db
 from app.events.bus import emit, hub
-from app.models.entities import Asset, AssetKind, AssetState, Event, Image, Project, ProjectStatus, Scene, Task
+from app.models.entities import Asset, AssetKind, AssetState, ChatMessage, Event, Image, Project, ProjectStatus, Scene, Task
 from app.orchestrator.service import ensure_seed_project, project_counts, start_project
-from app.schemas.api import AssetOut, AssetPatch, CommandRequest, EventOut, ProjectCreate, ProjectOut, RejectRequest, SceneOut, SeedRequest, TaskOut
+from app.schemas.api import AssetOut, AssetPatch, ChatMessageOut, ChatRequest, ChatResponse, CommandRequest, EventOut, ProjectCreate, ProjectOut, RejectRequest, SceneOut, SeedRequest, TaskOut
 
 router = APIRouter(prefix="/api")
 
@@ -196,6 +198,56 @@ async def command(project_id: str, payload: CommandRequest, db: Session = Depend
     db.commit()
     await emit(db, project_id, "director.command_applied", "director", {"command": payload.text})
     return {"applied": True, "status": project.status.value}
+
+
+def _chat_history(db: Session, project_id: str, limit: int = 50) -> list[ChatMessage]:
+    rows = db.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.project_id == project_id)
+        .order_by(ChatMessage.created_at)
+    ).all()
+    return rows[-limit:]
+
+
+@router.get("/projects/{project_id}/chat", response_model=list[ChatMessageOut])
+def get_chat(project_id: str, db: Session = Depends(get_db)) -> list[ChatMessageOut]:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return [ChatMessageOut.model_validate(row) for row in _chat_history(db, project_id)]
+
+
+@router.post("/projects/{project_id}/chat", response_model=ChatResponse)
+async def post_chat(project_id: str, payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    history = [{"role": row.role, "content": row.content} for row in _chat_history(db, project_id, limit=20)]
+
+    db.add(ChatMessage(project_id=project_id, role="user", agent="user", content=payload.text, actions=[]))
+    db.commit()
+
+    result = await run_assistant(db, project, payload.text, history)
+    applied = await apply_actions(db, project, result["actions"])
+
+    assistant_msg = ChatMessage(
+        project_id=project_id,
+        role="assistant",
+        agent="assistant",
+        content=result["reply"],
+        actions=applied,
+    )
+    db.add(assistant_msg)
+    db.commit()
+
+    await emit(db, project_id, "assistant.replied", "assistant", {"actions": applied})
+
+    return ChatResponse(
+        reply=result["reply"],
+        actions=applied,
+        messages=[ChatMessageOut.model_validate(row) for row in _chat_history(db, project_id)],
+    )
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetOut)

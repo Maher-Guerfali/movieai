@@ -93,6 +93,21 @@ export type Scene = {
   shots: { shot_no: number; description: string; camera: string; duration_s: number }[];
 };
 
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  agent: string;
+  content: string;
+  actions: Array<Record<string, unknown>>;
+  created_at: string;
+};
+
+export type ChatResponse = {
+  reply: string;
+  actions: Array<Record<string, unknown>>;
+  messages: ChatMessage[];
+};
+
 export type ProjectState = {
   project: Project;
   counts: Record<string, number>;
@@ -162,5 +177,11 @@ export const api = {
   approve: (assetId: string) => request<Asset>(`/api/assets/${assetId}/approve`, { method: "POST" }),
   reject: (assetId: string, notes: string) =>
     request<Asset>(`/api/assets/${assetId}/reject`, { method: "POST", body: JSON.stringify({ notes }) }),
-  regenerate: (assetId: string) => request<Asset>(`/api/assets/${assetId}/regenerate`, { method: "POST" })
+  regenerate: (assetId: string) => request<Asset>(`/api/assets/${assetId}/regenerate`, { method: "POST" }),
+  chatHistory: (projectId: string) => request<ChatMessage[]>(`/api/projects/${projectId}/chat`),
+  chat: (projectId: string, text: string) =>
+    request<ChatResponse>(`/api/projects/${projectId}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ text })
+    })
 };

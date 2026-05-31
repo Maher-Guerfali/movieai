@@ -28,6 +28,27 @@ class AssetPatch(BaseModel):
     brief: str | None = None
 
 
+class ChatRequest(BaseModel):
+    text: str
+
+
+class ChatMessageOut(BaseModel):
+    id: str
+    role: str
+    agent: str
+    content: str
+    actions: list[Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    actions: list[Any]
+    messages: list[ChatMessageOut]
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str

@@ -6,7 +6,8 @@ class Settings(BaseSettings):
     api_token: str = "change-me"
     frontend_origin: str = "http://localhost:3000"
     comfyui_url: str = "http://localhost:8188"
-    use_mock_ai: bool = True
+    use_mock_ai: bool = False
+    default_llm_provider: str = "openai"
     tick_ms: int = 2000
     max_generation_retries: int = 3
     approval_min_brief_match: int = 7

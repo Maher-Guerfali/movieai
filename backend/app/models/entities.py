@@ -184,3 +184,16 @@ class Event(Base, TimestampMixin):
     read: Mapped[bool] = mapped_column(default=False)
 
     project: Mapped[Project] = relationship(back_populates="events")
+
+
+class ChatMessage(Base, TimestampMixin):
+    """A single turn in the conversational-assistant thread for a project."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20), default="user")  # user | assistant
+    agent: Mapped[str] = mapped_column(String(80), default="assistant")
+    content: Mapped[str] = mapped_column(Text)
+    actions: Mapped[list] = mapped_column(JSON, default=list)
