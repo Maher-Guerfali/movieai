@@ -1,3 +1,4 @@
+import base64
 import json
 from typing import Any
 
@@ -6,16 +7,18 @@ import httpx
 from app.core.config import settings
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations"
 
 
 class OpenAIProvider:
-    """Real OpenAI (GPT) chat provider using the REST API over httpx."""
+    """Real OpenAI (GPT) chat + image provider using the REST API over httpx."""
 
     name = "openai"
 
     def __init__(self) -> None:
         self.api_key = settings.openai_api_key
         self.model = settings.openai_model
+        self.image_model = settings.openai_image_model
 
     async def complete(
         self,
@@ -34,7 +37,7 @@ class OpenAIProvider:
         if json_schema is not None:
             payload["response_format"] = {"type": "json_object"}
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             response = await client.post(
                 OPENAI_CHAT_URL,
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -44,13 +47,18 @@ class OpenAIProvider:
             data = response.json()
 
         content = data["choices"][0]["message"].get("content") or ""
+        usage = data.get("usage", {}) or {}
         parsed: dict[str, Any] = {}
         if json_schema is not None and content:
             try:
                 parsed = json.loads(content)
             except json.JSONDecodeError:
                 parsed = {}
-        return {"content": content, "json": parsed}
+        return {
+            "content": content,
+            "json": parsed,
+            "tokens": int(usage.get("total_tokens", 0)),
+        }
 
     async def vision(
         self,
@@ -69,4 +77,30 @@ class OpenAIProvider:
                 "content": [{"type": "text", "text": prompt}, *image_parts],
             }
         ]
-        return await self.complete(system, messages)
+        return await self.complete(system, messages, json_schema={"type": "object"})
+
+    async def image(self, prompt: str, size: str | None = None) -> bytes:
+        """Generate an image and return raw PNG bytes."""
+        payload = {
+            "model": self.image_model,
+            "prompt": prompt[:4000],
+            "size": size or settings.image_size,
+            "n": 1,
+        }
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(
+                OPENAI_IMAGE_URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        item = data["data"][0]
+        if item.get("b64_json"):
+            return base64.b64decode(item["b64_json"])
+        # Some models return a URL instead of inline base64.
+        async with httpx.AsyncClient(timeout=180) as client:
+            img = await client.get(item["url"])
+            img.raise_for_status()
+            return img.content

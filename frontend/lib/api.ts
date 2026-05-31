@@ -108,9 +108,22 @@ export type ChatResponse = {
   messages: ChatMessage[];
 };
 
+export type Usage = {
+  day: string;
+  tokens: number;
+  images: number;
+  cost_usd: number;
+  token_budget: number;
+  generation_budget: number;
+  tokens_remaining: number | null;
+  generations_remaining: number | null;
+  worker_running: boolean;
+};
+
 export type ProjectState = {
   project: Project;
   counts: Record<string, number>;
+  usage?: Usage;
   tasks: Task[];
   events: EventRecord[];
   activity: Record<string, string>;
@@ -164,6 +177,7 @@ export const api = {
   start: (projectId: string) => request<Project>(`/api/projects/${projectId}/start`, { method: "POST" }),
   pause: (projectId: string) => request<Project>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resume: (projectId: string) => request<Project>(`/api/projects/${projectId}/resume`, { method: "POST" }),
+  usage: (projectId: string) => request<Usage>(`/api/projects/${projectId}/usage`),
   command: (projectId: string, text: string) =>
     request<{ applied: boolean; status: string }>(`/api/projects/${projectId}/command`, {
       method: "POST",

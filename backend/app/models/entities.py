@@ -197,3 +197,16 @@ class ChatMessage(Base, TimestampMixin):
     agent: Mapped[str] = mapped_column(String(80), default="assistant")
     content: Mapped[str] = mapped_column(Text)
     actions: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class UsageRecord(Base, TimestampMixin):
+    """Daily accounting of model usage for a project."""
+
+    __tablename__ = "usage_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    images: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(default=0.0)

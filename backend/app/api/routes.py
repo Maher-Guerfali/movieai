@@ -1,6 +1,8 @@
 from html import escape
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -10,8 +12,10 @@ from app.api.utils import to_asset_out, to_project_out
 from app.db.session import get_db
 from app.events.bus import emit, hub
 from app.models.entities import Asset, AssetKind, AssetState, ChatMessage, Event, Image, Project, ProjectStatus, Scene, Task
-from app.orchestrator.service import ensure_seed_project, project_counts, start_project
+from app.orchestrator.service import ensure_seed_project, is_running, project_counts, start_project, stop_worker
 from app.schemas.api import AssetOut, AssetPatch, ChatMessageOut, ChatRequest, ChatResponse, CommandRequest, EventOut, ProjectCreate, ProjectOut, RejectRequest, SceneOut, SeedRequest, TaskOut
+from app.services.media import image_path
+from app.services.usage import usage_summary
 
 router = APIRouter(prefix="/api")
 
@@ -73,6 +77,7 @@ async def pause(project_id: str, db: Session = Depends(get_db)) -> ProjectOut:
         raise HTTPException(404, "Project not found")
     project.status = ProjectStatus.PAUSED
     db.commit()
+    stop_worker(project.id)
     await emit(db, project.id, "project.paused", "director", {})
     return to_project_out(db, project)
 
@@ -82,10 +87,20 @@ async def resume(project_id: str, db: Session = Depends(get_db)) -> ProjectOut:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    project.status = ProjectStatus.RUNNING
-    db.commit()
+    await start_project(db, project)
+    db.refresh(project)
     await emit(db, project.id, "project.resumed", "director", {})
     return to_project_out(db, project)
+
+
+@router.get("/projects/{project_id}/usage")
+def usage(project_id: str, db: Session = Depends(get_db)) -> dict:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    summary = usage_summary(db, project_id)
+    summary["worker_running"] = is_running(project_id)
+    return summary
 
 
 @router.get("/projects/{project_id}/state")
@@ -95,9 +110,12 @@ def project_state(project_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(404, "Project not found")
     tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.priority)).all()
     events = db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(12)).all()
+    usage = usage_summary(db, project_id)
+    usage["worker_running"] = is_running(project_id)
     return {
         "project": to_project_out(db, project),
         "counts": project_counts(db, project_id),
+        "usage": usage,
         "tasks": [TaskOut.model_validate(task) for task in tasks],
         "events": [EventOut.model_validate(event) for event in events],
         "activity": {
@@ -191,10 +209,12 @@ async def command(project_id: str, payload: CommandRequest, db: Session = Depend
     if not project:
         raise HTTPException(404, "Project not found")
     lowered = payload.text.lower()
-    if "pause" in lowered:
+    if "pause" in lowered or "stop" in lowered:
         project.status = ProjectStatus.PAUSED
+        db.commit()
+        stop_worker(project.id)
     elif "resume" in lowered or "continue" in lowered or "start" in lowered:
-        project.status = ProjectStatus.RUNNING
+        await start_project(db, project)
     db.commit()
     await emit(db, project_id, "director.command_applied", "director", {"command": payload.text})
     return {"applied": True, "status": project.status.value}
@@ -293,6 +313,12 @@ async def regenerate_asset(asset_id: str, db: Session = Depends(get_db)) -> Asse
     asset = db.get(Asset, asset_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
+    # Clear prior image + review so the worker produces a fresh pass. The prompt
+    # is kept (and bumped) unless none exists yet.
+    for review in list(asset.reviews):
+        db.delete(review)
+    for image in list(asset.images):
+        db.delete(image)
     asset.state = AssetState.GENERATING
     db.commit()
     await emit(db, asset.project_id, "generation.queued", "director", {"asset_id": asset.id, "forced": True})
@@ -326,6 +352,14 @@ def image(image_id: str, db: Session = Depends(get_db)) -> Response:
     row = db.get(Image, image_id)
     if not row:
         raise HTTPException(404, "Image not found")
+
+    # Serve the real generated file when present.
+    if row.minio_key:
+        path = image_path(row.minio_key)
+        if path:
+            return FileResponse(str(path))
+
+    # Fallback: stylized SVG placeholder (mock mode / generation pending).
     asset = db.get(Asset, row.asset_id)
     title = escape(asset.name if asset else "AI Movie Studio")
     palette = "#d7c39b" if row.state == AssetState.APPROVED else "#9aa685"

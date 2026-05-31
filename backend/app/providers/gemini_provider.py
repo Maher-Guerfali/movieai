@@ -56,7 +56,12 @@ class GeminiProvider:
                 parsed = json.loads(content)
             except json.JSONDecodeError:
                 parsed = {}
-        return {"content": content, "json": parsed}
+        usage = data.get("usageMetadata", {}) or {}
+        return {
+            "content": content,
+            "json": parsed,
+            "tokens": int(usage.get("totalTokenCount", 0)),
+        }
 
     async def vision(
         self,
@@ -64,4 +69,13 @@ class GeminiProvider:
         images: list[dict[str, Any]],
         prompt: str,
     ) -> dict[str, Any]:
-        return await self.complete(system, [{"role": "user", "content": prompt}])
+        return await self.complete(
+            system, [{"role": "user", "content": prompt}], json_schema={"type": "object"}
+        )
+
+    async def image(self, prompt: str, size: str | None = None) -> bytes:
+        # Image generation is routed through the OpenAI provider; Gemini here
+        # only handles text. Fall back to a transparent pixel if used directly.
+        from app.providers.base import MockProvider
+
+        return await MockProvider().image(prompt, size)

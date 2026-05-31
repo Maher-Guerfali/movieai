@@ -113,6 +113,13 @@ export default function Dashboard() {
     await refresh(started);
   }
 
+  async function stop() {
+    if (!project) return;
+    const next = await api.pause(project.id);
+    setProject(next);
+    await refresh(next);
+  }
+
   async function togglePause() {
     if (!project) return;
     const next = project.status === "RUNNING" ? await api.pause(project.id) : await api.resume(project.id);
@@ -167,8 +174,13 @@ export default function Dashboard() {
             <p>{project?.style ?? "Waltz with Bashir style bible"}</p>
           </div>
           <div className="top-actions">
+            {state?.usage && (
+              <span className={cx("worker-dot", state.usage.worker_running && "live")} title={state.usage.worker_running ? "Agents running" : "Agents idle"}>
+                {state.usage.worker_running ? "● live" : "○ idle"}
+              </span>
+            )}
             <span className={stateClass[project?.status ?? "DRAFT"]}>{project?.status ?? "DRAFT"}</span>
-            <button className="icon-button" onClick={togglePause} title={project?.status === "RUNNING" ? "Pause project" : "Resume project"}>
+            <button className="icon-button" onClick={togglePause} title={project?.status === "RUNNING" ? "Stop agents" : "Run agents"}>
               {project?.status === "RUNNING" ? <Pause size={17} /> : <Play size={17} />}
             </button>
             <button className="icon-button" title="Voice command"><Mic size={17} /></button>
@@ -193,7 +205,7 @@ export default function Dashboard() {
   );
 
   function renderView() {
-    if (view === "Overview") return <Overview state={state} latestImages={latestImages} onStart={start} />;
+    if (view === "Overview") return <Overview state={state} latestImages={latestImages} onStart={start} onStop={stop} />;
     if (view === "Story") return <Story screenplay={screenplay} scenes={scenes} />;
     if (view === "Characters" || view === "Environments" || view === "Props") {
       return <AssetWorkspace title={view} assets={assets} selectedAsset={selectedAsset} onSelect={setSelectedAssetId} onAction={assetAction} />;
@@ -205,14 +217,19 @@ export default function Dashboard() {
   }
 }
 
-function Overview({ state, latestImages, onStart }: { state: ProjectState | null; latestImages: { asset: Asset; image: Asset["images"][number] }[]; onStart: () => void }) {
+function Overview({ state, latestImages, onStart, onStop }: { state: ProjectState | null; latestImages: { asset: Asset; image: Asset["images"][number] }[]; onStart: () => void; onStop: () => void }) {
   const counts = state?.counts ?? {};
+  const usage = state?.usage;
   return (
     <div className="overview-grid">
       <section className="panel progress-panel">
         <div className="panel-head">
           <h2>Current Agent Activity</h2>
-          <button className="primary" onClick={onStart}><Play size={16} /> Start</button>
+          {usage?.worker_running ? (
+            <button className="primary stop" onClick={onStop}><Pause size={16} /> Stop</button>
+          ) : (
+            <button className="primary" onClick={onStart}><Play size={16} /> Run</button>
+          )}
         </div>
         <div className="agent-list">
           {Object.entries(state?.activity ?? {}).map(([agent, activity]) => (
@@ -223,6 +240,27 @@ function Overview({ state, latestImages, onStart }: { state: ProjectState | null
           ))}
         </div>
       </section>
+
+      {usage && (
+        <section className="panel usage-panel">
+          <h2>Usage Today <small className="usage-day">{usage.day}</small></h2>
+          <div className="metric-grid">
+            <div className="metric"><strong>{usage.tokens.toLocaleString()}</strong><span>tokens</span></div>
+            <div className="metric"><strong>{usage.images}</strong><span>images</span></div>
+            <div className="metric"><strong>${usage.cost_usd.toFixed(2)}</strong><span>est. cost</span></div>
+            <div className="metric">
+              <strong>{usage.generations_remaining ?? "∞"}</strong>
+              <span>images left</span>
+            </div>
+          </div>
+          {usage.token_budget > 0 && (
+            <div className="usage-bar" title={`${usage.tokens} / ${usage.token_budget} tokens`}>
+              <div className="usage-bar-fill" style={{ width: `${Math.min(100, (usage.tokens / usage.token_budget) * 100)}%` }} />
+            </div>
+          )}
+          <p className="usage-note">Budgets are set in <code>.env</code> (DAILY_TOKEN_BUDGET / DAILY_GENERATION_BUDGET). Agents auto-pause when reached.</p>
+        </section>
+      )}
       <section className="panel">
         <h2>Production Counts</h2>
         <div className="metric-grid">
@@ -385,10 +423,10 @@ function SettingsView() {
   return (
     <section className="settings-grid">
       {[
-        ["Producer / Art Director", "OpenAI", "gpt-4.1"],
-        ["Writer", "Anthropic", "claude-3-7-sonnet-latest"],
-        ["Critic", "Google", "gemini-2.5-pro"],
-        ["Image backend", "ComfyUI", "http://localhost:8188"]
+        ["Art Director (prompts)", "OpenAI GPT", "gpt-4.1"],
+        ["Critic (review)", "OpenAI GPT vision", "gpt-4.1"],
+        ["Assistant + Mediator", "OpenAI GPT", "gpt-4.1"],
+        ["Image generation", "OpenAI Images", "gpt-image-1"]
       ].map(([agent, provider, model]) => (
         <div className="panel setting" key={agent}>
           <span>{agent}</span>

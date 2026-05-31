@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.events.bus import emit
 from app.models.entities import Asset, AssetState, Project, ProjectStatus
+from app.orchestrator.service import start_project, stop_worker
 
 
 def _find_asset(db, project_id: str, ref: str | None) -> Asset | None:
@@ -42,13 +43,15 @@ async def apply_actions(
         target = action.get("asset") or action.get("asset_id") or action.get("name")
         result: dict[str, Any] = {"type": action_type, "ok": True}
 
-        if action_type in {"pause"}:
+        if action_type in {"pause", "stop"}:
             project.status = ProjectStatus.PAUSED
+            db.commit()
+            stop_worker(project.id)
             await emit(db, project.id, "project.paused", "mediator", {"via": "chat"})
             result["detail"] = "Production paused."
 
         elif action_type in {"resume", "start", "continue"}:
-            project.status = ProjectStatus.RUNNING
+            await start_project(db, project)
             await emit(db, project.id, "project.resumed", "mediator", {"via": "chat"})
             result["detail"] = "Production running."
 
@@ -79,6 +82,10 @@ async def apply_actions(
             if not asset:
                 result.update(ok=False, detail=f"Asset not found: {target}")
             else:
+                for review in list(asset.reviews):
+                    db.delete(review)
+                for image in list(asset.images):
+                    db.delete(image)
                 asset.state = AssetState.GENERATING
                 await emit(
                     db, project.id, "generation.queued", "mediator",

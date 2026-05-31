@@ -29,3 +29,12 @@ def get_provider(prefer: str | None = None) -> LLMProvider:
         return GeminiProvider()
 
     return MockProvider()
+
+
+def get_image_provider() -> LLMProvider:
+    """Image generation always prefers OpenAI's images API when a key exists."""
+    if settings.use_mock_ai:
+        return MockProvider()
+    if settings.openai_api_key:
+        return OpenAIProvider()
+    return MockProvider()

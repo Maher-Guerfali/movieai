@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-3-7-sonnet-latest"
     google_model: str = "gemini-2.5-pro"
 
+    # Image generation (OpenAI images API)
+    openai_image_model: str = "gpt-image-1"
+    image_size: str = "1536x1024"
+    media_dir: str = "media"
+
+    # Usage budgets (per project, per day). 0 disables the limit.
+    daily_token_budget: int = 2000000
+    daily_generation_budget: int = 500
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
