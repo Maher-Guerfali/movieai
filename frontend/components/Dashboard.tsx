@@ -18,8 +18,11 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
+import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, deleteProject, getApiBase } from "@/lib/api";
 import ChatAssistant from "@/components/ChatAssistant";
+import DebugLog from "@/components/DebugLog";
+import NewMovie from "@/components/NewMovie";
+import { log } from "@/lib/logger";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
 
@@ -65,6 +68,7 @@ export default function Dashboard() {
   const [screenplay, setScreenplay] = useState("");
   const [command, setCommand] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [booted, setBooted] = useState(false);
 
   async function refresh(activeProject = project) {
     if (!activeProject) return;
@@ -82,13 +86,44 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
+    log.info("Dashboard mounted. API base = " + getApiBase());
     bootProject()
-      .then(async (created) => {
-        setProject(created);
-        await refresh(created);
+      .then(async (existing) => {
+        if (existing) {
+          setProject(existing);
+          await refresh(existing);
+        }
       })
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setBooted(true));
   }, []);
+
+  // Poll state while the worker is running so usage/progress stays live even
+  // if a WebSocket event is missed.
+  useEffect(() => {
+    if (!project) return;
+    const id = setInterval(() => {
+      refresh(project).catch((err: Error) => log.warn("poll refresh failed", err.message));
+    }, 5000);
+    return () => clearInterval(id);
+  }, [project?.id, view]);
+
+  async function onCreated(created: Project) {
+    setProject(created);
+    setError(null);
+    await refresh(created);
+  }
+
+  async function startOver() {
+    if (!project) return;
+    if (!confirm("Delete this movie and start a new one?")) return;
+    await deleteProject(project.id);
+    setProject(null);
+    setState(null);
+    setAssets([]);
+    setScenes([]);
+    setScreenplay("");
+  }
 
   useEffect(() => {
     if (!project) return;
@@ -106,43 +141,78 @@ export default function Dashboard() {
   const selectedAsset = useMemo(() => assets.find((asset) => asset.id === selectedAssetId) ?? assets[0], [assets, selectedAssetId]);
   const latestImages = useMemo(() => assets.flatMap((asset) => asset.images.map((image) => ({ asset, image }))).slice(0, 6), [assets]);
 
+  async function guard(action: () => Promise<void>) {
+    try {
+      await action();
+      setError(null);
+    } catch (err) {
+      const message = (err as Error).message;
+      log.error("Action failed", message);
+      setError(message);
+    }
+  }
+
   async function start() {
     if (!project) return;
-    const started = await api.start(project.id);
-    setProject(started);
-    await refresh(started);
+    await guard(async () => {
+      const started = await api.start(project.id);
+      setProject(started);
+      await refresh(started);
+    });
   }
 
   async function stop() {
     if (!project) return;
-    const next = await api.pause(project.id);
-    setProject(next);
-    await refresh(next);
+    await guard(async () => {
+      const next = await api.pause(project.id);
+      setProject(next);
+      await refresh(next);
+    });
   }
 
   async function togglePause() {
     if (!project) return;
-    const next = project.status === "RUNNING" ? await api.pause(project.id) : await api.resume(project.id);
-    setProject(next);
-    await refresh(next);
+    await guard(async () => {
+      const next = project.status === "RUNNING" ? await api.pause(project.id) : await api.resume(project.id);
+      setProject(next);
+      await refresh(next);
+    });
   }
 
   async function sendCommand() {
     if (!project || !command.trim()) return;
-    await api.command(project.id, command.trim());
-    setCommand("");
-    await refresh(project);
+    await guard(async () => {
+      await api.command(project.id, command.trim());
+      setCommand("");
+      await refresh(project);
+    });
   }
 
   async function assetAction(kind: "approve" | "reject" | "regenerate", asset: Asset) {
-    if (kind === "approve") await api.approve(asset.id);
-    if (kind === "reject") await api.reject(asset.id, "Director requested another pass.");
-    if (kind === "regenerate") await api.regenerate(asset.id);
-    await refresh(project);
+    await guard(async () => {
+      if (kind === "approve") await api.approve(asset.id);
+      if (kind === "reject") await api.reject(asset.id, "Director requested another pass.");
+      if (kind === "regenerate") await api.regenerate(asset.id);
+      await refresh(project);
+    });
+  }
+
+  if (!project) {
+    return (
+      <>
+        <DebugLog />
+        {booted ? (
+          <NewMovie onCreated={onCreated} />
+        ) : (
+          <div className="boot-screen"><p>Connecting to the studio…</p></div>
+        )}
+      </>
+    );
   }
 
   return (
     <div className="studio-shell">
+      <DebugLog />
       <ChatAssistant projectId={project?.id} onActed={() => refresh(project).catch(() => undefined)} />
       <aside className="sidebar">
         <div className="brand">
@@ -170,8 +240,8 @@ export default function Dashboard() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <h1>{project?.name ?? "Lili Marleen - Damascus"}</h1>
-            <p>{project?.style ?? "Waltz with Bashir style bible"}</p>
+            <h1>{project.name}</h1>
+            <p>{project.style}</p>
           </div>
           <div className="top-actions">
             {state?.usage && (
@@ -179,6 +249,7 @@ export default function Dashboard() {
                 {state.usage.worker_running ? "● live" : "○ idle"}
               </span>
             )}
+            <button className="icon-button" onClick={startOver} title="Delete & start a new movie"><SquarePen size={17} /></button>
             <span className={stateClass[project?.status ?? "DRAFT"]}>{project?.status ?? "DRAFT"}</span>
             <button className="icon-button" onClick={togglePause} title={project?.status === "RUNNING" ? "Stop agents" : "Run agents"}>
               {project?.status === "RUNNING" ? <Pause size={17} /> : <Play size={17} />}
@@ -192,14 +263,13 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {error ? (
-          <section className="empty-state">
-            <h2>Backend is not running</h2>
-            <p>Start the FastAPI server on port 8000, then refresh this dashboard. Details: {error}</p>
-          </section>
-        ) : (
-          <section className="content">{renderView()}</section>
+        {error && (
+          <div className="error-banner">
+            <strong>Error:</strong> {error}
+            <button onClick={() => setError(null)} title="Dismiss">✕</button>
+          </div>
         )}
+        <section className="content">{renderView()}</section>
       </main>
     </div>
   );
@@ -367,8 +437,8 @@ function Story({ screenplay, scenes }: { screenplay: string; scenes: Scene[] }) 
   return (
     <div className="story-grid">
       <section className="panel">
-        <h2>Screenplay Seed</h2>
-        <p className="screenplay">{screenplay || "Press Start to generate the screenplay seed."}</p>
+        <h2>Screenplay</h2>
+        <p className="screenplay">{screenplay || "The Writer generated your story when the movie was created. If this is empty, check the Debug log."}</p>
       </section>
       <section className="panel">
         <h2>Scene Breakdown</h2>

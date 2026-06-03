@@ -1,3 +1,5 @@
+import { log } from "@/lib/logger";
+
 declare global {
   interface Window {
     __MOVIEAI_CONFIG__?: {
@@ -130,46 +132,79 @@ export type ProjectState = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${getApiBase()}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
-  return response.json() as Promise<T>;
-}
+  const method = init?.method ?? "GET";
+  const url = `${getApiBase()}${path}`;
+  const started = performance.now();
+  log.info(`→ ${method} ${path}`, init?.body ? safeParse(init.body) : undefined);
 
-export async function bootProject(): Promise<Project> {
-  const projects = await request<Project[]>("/api/projects");
-  let project = projects[0];
-  if (!project) {
-    project = await request<Project>("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        name: "Lili Marleen - Damascus",
-        style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
-      })
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }
     });
+  } catch (networkErr) {
+    log.error(`✗ ${method} ${path} — network/CORS failure`, {
+      message: (networkErr as Error).message,
+      url,
+      hint: "Is the backend running on " + getApiBase() + " ? Check CORS / FRONTEND_ORIGIN."
+    });
+    throw new Error(`Network error calling ${path}: ${(networkErr as Error).message}`);
   }
-  if (!project.counts?.scenes) {
-    return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
+
+  const ms = Math.round(performance.now() - started);
+  const raw = await response.text();
+  let parsed: unknown = undefined;
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = raw;
+    }
   }
-  return project;
+
+  if (!response.ok) {
+    const detail = (parsed as { detail?: unknown })?.detail ?? parsed ?? response.statusText;
+    log.error(`✗ ${method} ${path} → ${response.status} (${ms}ms)`, detail);
+    throw new Error(`${response.status} ${response.statusText} — ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+  }
+
+  log.info(`✓ ${method} ${path} → ${response.status} (${ms}ms)`);
+  return parsed as T;
 }
 
-export async function createSeedProject(): Promise<Project> {
+function safeParse(body: BodyInit): unknown {
+  if (typeof body !== "string") return "[binary body]";
+  try {
+    return JSON.parse(body);
+  } catch {
+    return body;
+  }
+}
+
+/**
+ * Returns the existing project, or null if none exists yet.
+ * No static seed is created — the user creates a movie from their own idea.
+ */
+export async function bootProject(): Promise<Project | null> {
+  const projects = await request<Project[]>("/api/projects");
+  return projects[0] ?? null;
+}
+
+/** Create a brand-new movie project from a user-supplied idea, then seed it via GPT. */
+export async function createMovie(input: { name: string; style: string; idea: string }): Promise<Project> {
   const project = await request<Project>("/api/projects", {
     method: "POST",
-    body: JSON.stringify({
-      name: "Lili Marleen - Damascus",
-      style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
-    })
+    body: JSON.stringify({ name: input.name, style: input.style })
   });
-  return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
+  return request<Project>(`/api/projects/${project.id}/seed`, {
+    method: "POST",
+    body: JSON.stringify({ instruction: input.idea })
+  });
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await request<{ deleted: boolean }>(`/api/projects/${projectId}`, { method: "DELETE" });
 }
 
 export const api = {

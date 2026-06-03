@@ -35,7 +35,14 @@ services:
       DATABASE_URL: postgresql+psycopg://movie:movie@postgres:5432/movieai
       FRONTEND_ORIGIN: http://localhost:3000
       COMFYUI_URL: http://host.docker.internal:8188
-      USE_MOCK_AI: "true"
+      # Pass real keys through from your shell / .env. Set USE_MOCK_AI=true to
+      # run without credentials (deterministic placeholder output).
+      USE_MOCK_AI: "${USE_MOCK_AI:-false}"
+      DEFAULT_LLM_PROVIDER: "${DEFAULT_LLM_PROVIDER:-openai}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4.1}"
+      OPENAI_IMAGE_MODEL: "${OPENAI_IMAGE_MODEL:-gpt-image-1}"
       API_TOKEN: change-me
     ports:
       - "8000:8000"

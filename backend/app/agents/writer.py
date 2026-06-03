@@ -1,76 +1,111 @@
+"""Writer agent.
+
+Generates the screenplay, scene breakdown and asset list (characters,
+environments, props) for a movie from the user's idea using GPT. There is no
+hardcoded story anymore — everything is produced from the project's instruction.
+"""
+
 from app.models.entities import AssetKind
+from app.providers.factory import get_provider
+
+WRITER_SYSTEM = """You are the Writer/Producer of an autonomous AI movie studio.
+Given a movie idea and a visual style, break it into a production package for an
+animated film.
+
+Respond ONLY with JSON of this exact shape:
+{
+  "title": "<short movie title>",
+  "screenplay": "<2-4 paragraph narrative synopsis>",
+  "scenes": [
+    {"title": "<scene title>", "summary": "<1-2 sentences>", "location": "<place>", "time_of_day": "day|night|dusk|dawn"}
+  ],
+  "assets": [
+    {"kind": "CHARACTER|ENVIRONMENT|PROP", "name": "<name>", "description": "<1 sentence>"}
+  ]
+}
+
+Rules:
+- 6 to 10 scenes.
+- 2 to 5 CHARACTER assets, 2 to 5 ENVIRONMENT assets, 1 to 4 PROP assets.
+- Keep names concrete and unique. No commentary outside the JSON."""
 
 
-SEED_SCENES = [
-    ("kunduz-first-meeting", "Kunduz, First Meeting", "Camp courtyard, rooftop nights, schools beginning.", "Afghan Camp"),
-    ("the-kiss-threat", "The Kiss and the Threat", "School opening, the relationship, the crucified-girl letter.", "Village School"),
-    ("the-transfer", "The Transfer", "P signs the order that saves LM by breaking her heart.", "Afghan Camp"),
-    ("clearance-granted", "Clearance Granted", "The truck strike and P's collapse into guilt.", "Desert Road"),
-    ("syrian-border", "Reunion at the Syrian Border", "LM finds the ruined P in 2025.", "Syrian Border Center"),
-    ("resignation", "Resignation", "LM declines the medal and leaves the military.", "Berlin Office"),
-    ("plea-for-punishment", "Petty Crime as a Plea", "Perfume, break-ins, and the toy gun.", "Munich Streets"),
-    ("the-ward", "The Ward", "Therapy, forbidden contact, and the final attempt.", "Psychiatric Ward"),
-    ("coda", "Coda", "Kabul, Berlin, Munich, and the jasmine letter.", "Munich Apartment"),
-]
-
-
-SEED_ASSETS = [
-    (
-        AssetKind.ENVIRONMENT,
-        "Afghan Camp (Kunduz, 2010)",
-        "Dusty fortified camp with tents, watchtower, generators, and rooftop night conversations.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Munich Apartment (present)",
-        "Quiet aged interior where the jasmine-scented letter is opened.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Syrian Border Center (2025)",
-        "Air-traffic-control room with screens, fluorescent fatigue, and desert beyond the glass.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Psychiatric Ward",
-        "Cold institutional ward, overlit corridors, clipped routines, and emotional isolation.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Desert Road of the Truck Strike",
-        "Heat-hazed road, dust, drone distance, and moral aftermath rather than spectacle.",
-    ),
-    (
-        AssetKind.CHARACTER,
-        "Major P",
-        "Disciplined officer in 2010; ruined, gray, and swollen by guilt in 2025.",
-    ),
-    (
-        AssetKind.CHARACTER,
-        "Lieutenant LM (Lili Marleen)",
-        "Aristocratic, rebellious idealist who builds schools and later unravels under the war's weight.",
-    ),
-    (AssetKind.PROP, "Threatening Letter", "A newspaper-hidden symbol of a crucified girl; no words needed."),
-    (AssetKind.PROP, "Jasmine-Scented Letter", "The coda letter, intimate and devastating."),
-    (AssetKind.PROP, "Cracked Door", "The splinter P touches after LM leaves."),
-]
-
-
-def screenplay_excerpt() -> str:
+def brief_for(kind: AssetKind, name: str, description: str, style: str) -> str:
     return (
-        "The screenplay opens in Kunduz with wind carrying dust over a fortified camp. "
-        "Major P watches Lieutenant LM cross the courtyard, all new uniform and impossible conviction. "
-        "Their bond grows through school-building, rooftop talks, and a love neither can safely name. "
-        "When P discovers the Taliban threat against her, he engineers her transfer and accepts being hated. "
-        "Three weeks later his clearance order kills five boys beneath a truck, splitting the film into the "
-        "sharp 2010 memory and the ruined 2025 aftermath. The final movement follows LM's resignation, "
-        "institutional collapse, and the Munich letter that leaves P alone with jasmine and ash."
+        f"{name} must read in the film's visual style ({style}). "
+        f"Core brief: {description}"
     )
 
 
-def brief_for(kind: AssetKind, name: str, description: str) -> str:
+def _fallback_package(idea: str) -> dict:
+    """Deterministic package derived from the idea (used only in mock mode).
+
+    This is NOT a hardcoded story — it is generated from whatever idea the user
+    typed, so mock mode stays runnable without an API key.
+    """
+    snippet = idea.strip().rstrip(".")
+    title = (snippet[:48] + "…") if len(snippet) > 48 else (snippet or "Untitled Movie")
+    beats = ["Opening", "Inciting Incident", "Rising Action", "Midpoint", "Crisis", "Climax", "Resolution"]
+    scenes = [
+        {"title": f"{beat}", "summary": f"{beat} of: {snippet}.", "location": "Scene location", "time_of_day": "day"}
+        for beat in beats
+    ]
+    assets = [
+        {"kind": "CHARACTER", "name": "Protagonist", "description": f"The lead of: {snippet}."},
+        {"kind": "CHARACTER", "name": "Antagonist", "description": "The opposing force in the story."},
+        {"kind": "ENVIRONMENT", "name": "Primary Setting", "description": "The main world the story unfolds in."},
+        {"kind": "ENVIRONMENT", "name": "Secondary Setting", "description": "A contrasting location."},
+        {"kind": "PROP", "name": "Key Object", "description": "An object central to the plot."},
+    ]
+    return {"title": title.title(), "screenplay": f"A film about: {snippet}.", "scenes": scenes, "assets": assets}
+
+
+async def generate_story(idea: str, style: str) -> tuple[dict, int]:
+    """Generate the full story package from the idea. Returns (package, tokens).
+
+    package = {title, screenplay, scenes:[...], assets:[...]}
+    With a real provider, raises RuntimeError if nothing usable comes back so
+    the caller can surface a clear error. In mock mode, returns a deterministic
+    package derived from the idea so the UI stays testable offline.
+    """
+    provider = get_provider()
+    user = f"Movie idea:\n{idea}\n\nVisual style:\n{style}"
+    result = await provider.complete(
+        WRITER_SYSTEM, [{"role": "user", "content": user}], json_schema={"type": "object"}
+    )
+    data = result.get("json") or {}
+    tokens = int(result.get("tokens", 0))
+
+    scenes = data.get("scenes") or []
+    assets = data.get("assets") or []
+    if not scenes or not assets:
+        if provider.name == "mock":
+            return _fallback_package(idea), tokens
+        raise RuntimeError(
+            "Writer model returned no scenes/assets. "
+            f"(provider={provider.name}; check your API key, model name, and quota)"
+        )
+
+    # Normalize asset kinds to the enum values.
+    normalized_assets = []
+    for asset in assets:
+        kind = str(asset.get("kind", "PROP")).upper()
+        if kind not in {"CHARACTER", "ENVIRONMENT", "PROP"}:
+            kind = "PROP"
+        normalized_assets.append(
+            {
+                "kind": kind,
+                "name": asset.get("name", "Untitled"),
+                "description": asset.get("description", ""),
+            }
+        )
+
     return (
-        f"{name} must read in Waltz with Bashir style: rotoscoped-real anatomy, hand-drawn ink, "
-        f"muted sepia/olive palette, high-contrast hatching, and restrained war-memory tone. "
-        f"Core brief: {description}"
+        {
+            "title": data.get("title", "Untitled Movie"),
+            "screenplay": data.get("screenplay", ""),
+            "scenes": scenes,
+            "assets": normalized_assets,
+        },
+        tokens,
     )

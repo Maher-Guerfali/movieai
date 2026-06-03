@@ -1,14 +1,34 @@
 # AI Movie Studio
 
-An autonomous AI movie production studio for turning a comic/story package into a film production tree. The first seeded production is **Lili Marleen - Damascus**, in a restrained *Waltz with Bashir* inspired visual style.
+An autonomous AI movie production studio. You type a **movie idea**; the studio's
+agents write the story, break it into scenes and assets, generate reference
+images, and review them — live.
 
-This repo now contains a runnable MVP scaffold:
+There is **no hardcoded story**. On first load you get a *Create a new movie*
+form. The Writer agent (GPT) turns your idea into the title, screenplay, scenes,
+and the character/environment/prop list. Then the always-on worker generates
+prompts, images (OpenAI images API), and critic reviews for each asset.
 
-- FastAPI backend with project, scene, asset, prompt, image, review, task, event, and notification models.
-- Deterministic mock agent loop for local development: Writer creates the seed story tree, Art Director creates prompts/mock image references, Critic approves with structured scores.
+Key pieces:
+
+- FastAPI backend: project, scene, asset, prompt, image, review, task, event,
+  chat, and usage models.
+- Agents: `writer` (story from your idea), `art_director` (prompts), `critic`
+  (image review), `assistant` + `mediator` (chat that edits the production).
+- Always-on background worker; per-project usage tracking + budgets.
 - WebSocket event hub and REST API under `/api`.
-- Next.js dashboard with left navigation, live progress, task queue, story view, environment/character/prop drill-downs, prompt history, generated references, critic reviews, and Director controls.
-- Docker Compose for Postgres, Qdrant, MinIO, backend, and frontend. ComfyUI remains an external configurable service.
+- Next.js dashboard: create-movie flow, live progress, usage panel, asset
+  drill-downs, conversational assistant (top-left), and an on-screen **Debug
+  Log** (bottom-right) that prints every API request/response and error.
+
+## Troubleshooting ("it says running but nothing appears")
+
+Open the **Debug Log** (bottom-right of the dashboard). It shows every API call,
+the status code, timing, and the full error body from the backend — so you can
+see exactly which request failed and why (bad/missing `OPENAI_API_KEY`, quota,
+CORS, model name, etc.). The same logs are printed to the browser console
+prefixed with `[MovieAI]`. Backend failures during story generation return a
+clear `502` with the reason, and the worker pauses instead of spinning.
 
 ## Quickstart
 

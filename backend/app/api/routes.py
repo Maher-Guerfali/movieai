@@ -11,7 +11,7 @@ from app.agents.mediator import apply_actions
 from app.api.utils import to_asset_out, to_project_out
 from app.db.session import get_db
 from app.events.bus import emit, hub
-from app.models.entities import Asset, AssetKind, AssetState, ChatMessage, Event, Image, Project, ProjectStatus, Scene, Task
+from app.models.entities import Asset, AssetKind, AssetState, ChatMessage, Event, Image, Project, ProjectStatus, Scene, Task, UsageRecord
 from app.orchestrator.service import ensure_seed_project, is_running, project_counts, start_project, stop_worker
 from app.schemas.api import AssetOut, AssetPatch, ChatMessageOut, ChatRequest, ChatResponse, CommandRequest, EventOut, ProjectCreate, ProjectOut, RejectRequest, SceneOut, SeedRequest, TaskOut
 from app.services.media import image_path
@@ -55,7 +55,12 @@ async def seed_project(project_id: str, payload: SeedRequest, db: Session = Depe
     if not project:
         raise HTTPException(404, "Project not found")
     project.instruction = payload.instruction
-    await ensure_seed_project(db, project)
+    db.commit()
+    try:
+        await ensure_seed_project(db, project)
+    except Exception as exc:  # noqa: BLE001 - surface a clear, actionable error
+        await emit(db, project.id, "writer.error", "writer", {"error": str(exc)})
+        raise HTTPException(502, f"Story generation failed: {exc}") from exc
     db.refresh(project)
     return to_project_out(db, project)
 
@@ -65,9 +70,31 @@ async def start(project_id: str, db: Session = Depends(get_db)) -> ProjectOut:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    await start_project(db, project)
+    try:
+        await start_project(db, project)
+    except Exception as exc:  # noqa: BLE001
+        project.status = ProjectStatus.PAUSED
+        db.commit()
+        await emit(db, project.id, "writer.error", "producer", {"error": str(exc)})
+        raise HTTPException(502, f"Could not start production: {exc}") from exc
     db.refresh(project)
     return to_project_out(db, project)
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, db: Session = Depends(get_db)) -> dict:
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    stop_worker(project_id)
+    # Tables without an ORM cascade relationship must be cleared explicitly.
+    for row in db.scalars(select(ChatMessage).where(ChatMessage.project_id == project_id)).all():
+        db.delete(row)
+    for row in db.scalars(select(UsageRecord).where(UsageRecord.project_id == project_id)).all():
+        db.delete(row)
+    db.delete(project)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/projects/{project_id}/pause", response_model=ProjectOut)
