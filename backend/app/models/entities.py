@@ -12,8 +12,19 @@ class Base(DeclarativeBase):
 
 class ProjectStatus(str, enum.Enum):
     DRAFT = "DRAFT"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+
+
+class PhaseStatus(str, enum.Enum):
+    PROPOSED = "PROPOSED"        # plan ready, awaiting Director approval
+    RUNNING = "RUNNING"          # executing the approved tasks
+    REVIEWING = "REVIEWING"      # automatic review of the produced work
+    DONE = "DONE"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"            # a provider/config error blocked the phase
 
 
 class AssetKind(str, enum.Enum):
@@ -71,6 +82,23 @@ class Project(Base, TimestampMixin):
     assets: Mapped[list["Asset"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     events: Mapped[list["Event"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    phases: Mapped[list["Phase"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class Phase(Base, TimestampMixin):
+    __tablename__ = "phases"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    phase_no: Mapped[int] = mapped_column(Integer)
+    key: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[PhaseStatus] = mapped_column(Enum(PhaseStatus), default=PhaseStatus.PROPOSED)
+    plan: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    project: Mapped[Project] = relationship(back_populates="phases")
 
 
 class Scene(Base, TimestampMixin):
@@ -162,6 +190,7 @@ class Task(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    phase_id: Mapped[str | None] = mapped_column(ForeignKey("phases.id"), index=True, nullable=True)
     type: Mapped[str] = mapped_column(String(120), index=True)
     owner_agent: Mapped[str] = mapped_column(String(80), index=True)
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.TODO)

@@ -8,12 +8,13 @@ from app.models.entities import Event
 
 
 NOTIFICATION_TYPES = {
-    "task.completed",
+    "phase.proposed",
+    "phase.completed",
+    "phase.failed",
     "image.created",
     "review.completed",
-    "scene.completed",
-    "act.completed",
     "needs_director",
+    "project.completed",
     "budget.exhausted",
 }
 

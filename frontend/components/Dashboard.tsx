@@ -14,11 +14,13 @@ import {
   Settings,
   Sparkles,
   SquarePen,
+  TriangleAlert,
   UserRound,
-  Wand2
+  Wand2,
+  X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
+import { Asset, EventRecord, Phase, Project, ProjectState, Scene, Task, api, bootProject, getApiBase } from "@/lib/api";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
 
@@ -40,11 +42,16 @@ const stateClass: Record<string, string> = {
   RUNNING: "state running",
   PAUSED: "state paused",
   DRAFT: "state draft",
+  AWAITING_APPROVAL: "state planning",
+  COMPLETED: "state approved",
   TODO: "state draft",
   PLANNING: "state planning",
+  PROPOSED: "state planning",
   GENERATING: "state generating",
+  REVIEWING: "state review",
   UNDER_REVIEW: "state review",
   REJECTED: "state rejected",
+  FAILED: "state rejected",
   NEEDS_DIRECTOR: "state rejected",
   DONE: "state approved",
   IN_PROGRESS: "state generating"
@@ -63,6 +70,7 @@ export default function Dashboard() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [screenplay, setScreenplay] = useState("");
   const [command, setCommand] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh(activeProject = project) {
@@ -105,32 +113,41 @@ export default function Dashboard() {
   const selectedAsset = useMemo(() => assets.find((asset) => asset.id === selectedAssetId) ?? assets[0], [assets, selectedAssetId]);
   const latestImages = useMemo(() => assets.flatMap((asset) => asset.images.map((image) => ({ asset, image }))).slice(0, 6), [assets]);
 
-  async function start() {
-    if (!project) return;
-    const started = await api.start(project.id);
-    setProject(started);
-    await refresh(started);
+  async function run<T>(fn: () => Promise<T>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await refresh(project);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
+
+  const start = () => project && run(() => api.start(project.id));
+  const approvePhase = (phase: Phase) => run(() => api.approvePhase(phase.id));
+  const rejectPhase = (phase: Phase) => run(() => api.rejectPhase(phase.id, "Director held this phase."));
 
   async function togglePause() {
     if (!project) return;
-    const next = project.status === "RUNNING" ? await api.pause(project.id) : await api.resume(project.id);
-    setProject(next);
-    await refresh(next);
+    await run(() => (project.status === "RUNNING" ? api.pause(project.id) : api.resume(project.id)));
   }
 
   async function sendCommand() {
     if (!project || !command.trim()) return;
-    await api.command(project.id, command.trim());
+    const text = command.trim();
     setCommand("");
-    await refresh(project);
+    await run(() => api.command(project.id, text));
   }
 
   async function assetAction(kind: "approve" | "reject" | "regenerate", asset: Asset) {
-    if (kind === "approve") await api.approve(asset.id);
-    if (kind === "reject") await api.reject(asset.id, "Director requested another pass.");
-    if (kind === "regenerate") await api.regenerate(asset.id);
-    await refresh(project);
+    await run(() => {
+      if (kind === "approve") return api.approve(asset.id);
+      if (kind === "reject") return api.reject(asset.id, "Director requested another pass.");
+      return api.regenerate(asset.id);
+    });
   }
 
   return (
@@ -165,7 +182,7 @@ export default function Dashboard() {
             <p>{project?.style ?? "Waltz with Bashir style bible"}</p>
           </div>
           <div className="top-actions">
-            <span className={stateClass[project?.status ?? "DRAFT"]}>{project?.status ?? "DRAFT"}</span>
+            <span className={stateClass[project?.status ?? "DRAFT"]}>{(project?.status ?? "DRAFT").replace("_", " ")}</span>
             <button className="icon-button" onClick={togglePause} title={project?.status === "RUNNING" ? "Pause project" : "Resume project"}>
               {project?.status === "RUNNING" ? <Pause size={17} /> : <Play size={17} />}
             </button>
@@ -180,8 +197,8 @@ export default function Dashboard() {
 
         {error ? (
           <section className="empty-state">
-            <h2>Backend is not running</h2>
-            <p>Start the FastAPI server on port 8000, then refresh this dashboard. Details: {error}</p>
+            <h2>Something needs attention</h2>
+            <p>{error}</p>
           </section>
         ) : (
           <section className="content">{renderView()}</section>
@@ -191,10 +208,11 @@ export default function Dashboard() {
   );
 
   function renderView() {
-    if (view === "Overview") return <Overview state={state} latestImages={latestImages} onStart={start} />;
+    if (view === "Overview")
+      return <Overview state={state} latestImages={latestImages} busy={busy} onStart={start} onApprove={approvePhase} onReject={rejectPhase} />;
     if (view === "Story") return <Story screenplay={screenplay} scenes={scenes} />;
     if (view === "Characters" || view === "Environments" || view === "Props") {
-      return <AssetWorkspace title={view} assets={assets} selectedAsset={selectedAsset} onSelect={setSelectedAssetId} onAction={assetAction} />;
+      return <AssetWorkspace title={view} assets={assets} selectedAsset={selectedAsset} busy={busy} onSelect={setSelectedAssetId} onAction={assetAction} />;
     }
     if (view === "Tasks") return <Tasks state={state} />;
     if (view === "Notifications") return <Notifications events={state?.events ?? []} />;
@@ -203,28 +221,132 @@ export default function Dashboard() {
   }
 }
 
-function Overview({ state, latestImages, onStart }: { state: ProjectState | null; latestImages: { asset: Asset; image: Asset["images"][number] }[]; onStart: () => void }) {
+function PhasePanel({
+  state,
+  busy,
+  onStart,
+  onApprove,
+  onReject
+}: {
+  state: ProjectState | null;
+  busy: boolean;
+  onStart: () => void;
+  onApprove: (phase: Phase) => void;
+  onReject: (phase: Phase) => void;
+}) {
+  const phase = state?.current_phase ?? null;
+  const status = state?.project.status;
+  const phaseTasks = (state?.tasks ?? []).filter((task) => task.phase_id === phase?.id);
+
+  return (
+    <section className="panel phase-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Production Pipeline</h2>
+          <p>Approve each phase to let the agents generate it, then review the next.</p>
+        </div>
+      </div>
+
+      {!phase && status !== "COMPLETED" && (
+        <div className="phase-cta">
+          <p>Press start and the Producer proposes the first phase as a checklist. Nothing is generated until you approve it.</p>
+          <button className="primary" disabled={busy} onClick={onStart}><Play size={16} /> {busy ? "Working…" : "Start production"}</button>
+        </div>
+      )}
+
+      {!phase && status === "COMPLETED" && (
+        <div className="phase-cta">
+          <p>All phases complete. Every reference has been generated and reviewed.</p>
+        </div>
+      )}
+
+      {phase && (
+        <div className="phase-active">
+          <div className="phase-title">
+            <span className="phase-no">Phase {phase.phase_no}</span>
+            <strong>{phase.title}</strong>
+            <span className={stateClass[phase.status]}>{phase.status}</span>
+          </div>
+          <p className="phase-desc">{phase.description}</p>
+
+          {phase.status === "FAILED" && (
+            <div className="phase-error">
+              <TriangleAlert size={16} />
+              <span>{String((phase.result as { error?: string })?.error ?? "This phase failed.")}</span>
+            </div>
+          )}
+
+          <h3>{phase.status === "PROPOSED" || phase.status === "FAILED" ? "Planned tasks" : "Tasks"}</h3>
+          <ol className="plan-list">
+            {phase.plan.map((item) => {
+              const task = phaseTasks.find((t) => t.payload.label === item.label);
+              const taskStatus = task?.status;
+              return (
+                <li key={item.key + item.label}>
+                  <span className={cx("plan-dot", taskStatus && stateClass[taskStatus])} />
+                  <span className="plan-label">{item.label}</span>
+                  {item.kind && <small className="plan-kind">{item.kind}</small>}
+                  {taskStatus && <span className={stateClass[taskStatus]}>{taskStatus}</span>}
+                </li>
+              );
+            })}
+          </ol>
+
+          {(phase.status === "PROPOSED" || phase.status === "FAILED") && (
+            <div className="button-row">
+              <button className="primary" disabled={busy} onClick={() => onApprove(phase)}>
+                <Check size={16} /> {busy ? "Working…" : phase.status === "FAILED" ? "Retry phase" : "Approve & start"}
+              </button>
+              <button disabled={busy} onClick={() => onReject(phase)}><X size={16} /> Hold</button>
+            </div>
+          )}
+
+          {(phase.status === "RUNNING" || phase.status === "REVIEWING") && (
+            <p className="phase-working">Agents are working on this phase…</p>
+          )}
+        </div>
+      )}
+
+      <h3>Pipeline</h3>
+      <div className="phase-stepper">
+        {(state?.phases ?? []).map((p) => (
+          <div key={p.id} className={cx("step", p.id === phase?.id && "current")}>
+            <span className={stateClass[p.status]}>{p.phase_no}</span>
+            <div>
+              <strong>{p.title}</strong>
+              <small>{p.status}</small>
+            </div>
+          </div>
+        ))}
+        {(state?.phases ?? []).length === 0 && <p className="phase-desc">No phases yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+function Overview({
+  state,
+  latestImages,
+  busy,
+  onStart,
+  onApprove,
+  onReject
+}: {
+  state: ProjectState | null;
+  latestImages: { asset: Asset; image: Asset["images"][number] }[];
+  busy: boolean;
+  onStart: () => void;
+  onApprove: (phase: Phase) => void;
+  onReject: (phase: Phase) => void;
+}) {
   const counts = state?.counts ?? {};
   return (
     <div className="overview-grid">
-      <section className="panel progress-panel">
-        <div className="panel-head">
-          <h2>Current Agent Activity</h2>
-          <button className="primary" onClick={onStart}><Play size={16} /> Start</button>
-        </div>
-        <div className="agent-list">
-          {Object.entries(state?.activity ?? {}).map(([agent, activity]) => (
-            <div className="agent-row" key={agent}>
-              <span>{agent.replace("_", " ")}</span>
-              <p>{activity}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      <PhasePanel state={state} busy={busy} onStart={onStart} onApprove={onApprove} onReject={onReject} />
       <section className="panel">
         <h2>Production Counts</h2>
         <div className="metric-grid">
-          {["scenes", "environments", "characters", "props", "tasks", "notifications"].map((key) => (
+          {["scenes", "environments", "characters", "props", "phases", "tasks"].map((key) => (
             <div className="metric" key={key}>
               <strong>{counts[key] ?? 0}</strong>
               <span>{key}</span>
@@ -232,20 +354,9 @@ function Overview({ state, latestImages, onStart }: { state: ProjectState | null
           ))}
         </div>
       </section>
-      <section className="panel queue-panel">
-        <h2>Queue Timeline</h2>
-        {(state?.tasks ?? []).map((task) => (
-          <div className="task-row" key={task.id}>
-            <span className={stateClass[task.status]}>{task.status}</span>
-            <div>
-              <strong>{task.payload.label ?? task.type}</strong>
-              <p>{task.owner_agent}</p>
-            </div>
-          </div>
-        ))}
-      </section>
       <section className="panel gallery-panel">
         <h2>Generated References</h2>
+        {latestImages.length === 0 && <p className="phase-desc">References appear here once the reference phase is approved. Open Characters / Environments / Props to drill in.</p>}
         <div className="thumb-grid">
           {latestImages.map(({ asset, image }) => (
             <figure key={image.id}>
@@ -259,11 +370,12 @@ function Overview({ state, latestImages, onStart }: { state: ProjectState | null
   );
 }
 
-function AssetWorkspace({ title, assets, selectedAsset, onSelect, onAction }: { title: string; assets: Asset[]; selectedAsset?: Asset; onSelect: (id: string) => void; onAction: (kind: "approve" | "reject" | "regenerate", asset: Asset) => void }) {
+function AssetWorkspace({ title, assets, selectedAsset, busy, onSelect, onAction }: { title: string; assets: Asset[]; selectedAsset?: Asset; busy: boolean; onSelect: (id: string) => void; onAction: (kind: "approve" | "reject" | "regenerate", asset: Asset) => void }) {
   return (
     <div className="asset-workspace">
       <section className="panel asset-list">
         <h2>{title}</h2>
+        {assets.length === 0 && <p className="phase-desc">Nothing here yet. Approve the breakdown phase to populate {title.toLowerCase()}.</p>}
         {assets.map((asset) => (
           <button key={asset.id} className={cx("asset-row", selectedAsset?.id === asset.id && "active")} onClick={() => onSelect(asset.id)}>
             <span className={stateClass[asset.state]}>{asset.state}</span>
@@ -284,7 +396,7 @@ function AssetWorkspace({ title, assets, selectedAsset, onSelect, onAction }: { 
           <div className="detail-grid">
             <div>
               <h3>Creative Brief</h3>
-              <p className="brief">{selectedAsset.brief}</p>
+              <p className="brief">{selectedAsset.brief || "Brief is written when the Creative Briefs phase is approved."}</p>
               <h3>Prompt History</h3>
               {selectedAsset.prompts.map((prompt) => (
                 <div className="prompt-box" key={prompt.id}>
@@ -301,9 +413,9 @@ function AssetWorkspace({ title, assets, selectedAsset, onSelect, onAction }: { 
                 ))}
               </div>
               <div className="button-row">
-                <button onClick={() => onAction("approve", selectedAsset)}><Check size={16} /> Approve</button>
-                <button onClick={() => onAction("reject", selectedAsset)}><Pause size={16} /> Reject</button>
-                <button onClick={() => onAction("regenerate", selectedAsset)}><RefreshCcw size={16} /> Regenerate</button>
+                <button disabled={busy} onClick={() => onAction("approve", selectedAsset)}><Check size={16} /> Approve</button>
+                <button disabled={busy} onClick={() => onAction("reject", selectedAsset)}><X size={16} /> Reject</button>
+                <button disabled={busy} onClick={() => onAction("regenerate", selectedAsset)}><RefreshCcw size={16} /> Regenerate</button>
               </div>
               <h3>Critic Review</h3>
               {selectedAsset.reviews.map((review) => (
@@ -327,11 +439,12 @@ function Story({ screenplay, scenes }: { screenplay: string; scenes: Scene[] }) 
   return (
     <div className="story-grid">
       <section className="panel">
-        <h2>Screenplay Seed</h2>
-        <p className="screenplay">{screenplay || "Press Start to generate the screenplay seed."}</p>
+        <h2>Screenplay</h2>
+        <p className="screenplay">{screenplay || "The screenplay is written when the Story & Breakdown phase is approved."}</p>
       </section>
       <section className="panel">
         <h2>Scene Breakdown</h2>
+        {scenes.length === 0 && <p className="phase-desc">No scenes yet.</p>}
         {scenes.map((scene) => (
           <div className="scene-row" key={scene.id}>
             <span>{scene.scene_no.toString().padStart(2, "0")}</span>
@@ -351,12 +464,13 @@ function Tasks({ state }: { state: ProjectState | null }) {
   return (
     <section className="panel">
       <h2>Tasks</h2>
+      {(state?.tasks ?? []).length === 0 && <p className="phase-desc">Tasks appear as phases run.</p>}
       {(state?.tasks ?? []).map((task) => (
         <div className="task-row wide" key={task.id}>
           <span className={stateClass[task.status]}>{task.status}</span>
           <div>
             <strong>{task.payload.label ?? task.type}</strong>
-            <p>{task.owner_agent} · priority {task.priority} · retries {task.retries}</p>
+            <p>{task.owner_agent} · retries {task.retries}</p>
           </div>
         </div>
       ))}

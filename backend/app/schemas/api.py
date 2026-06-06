@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.entities import AssetKind, AssetState, ProjectStatus, TaskStatus
+from app.models.entities import AssetKind, AssetState, PhaseStatus, ProjectStatus, TaskStatus
 
 
 class ProjectCreate(BaseModel):
@@ -114,6 +114,7 @@ class AssetOut(BaseModel):
 
 class TaskOut(BaseModel):
     id: str
+    phase_id: str | None = None
     type: str
     owner_agent: str
     status: TaskStatus
@@ -123,6 +124,20 @@ class TaskOut(BaseModel):
     retries: int
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PhaseOut(BaseModel):
+    id: str
+    phase_no: int
+    key: str
+    title: str
+    description: str
+    status: PhaseStatus
+    plan: list[dict[str, Any]]
+    result: dict[str, Any]
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

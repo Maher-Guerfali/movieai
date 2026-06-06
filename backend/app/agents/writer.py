@@ -1,76 +1,74 @@
-from app.models.entities import AssetKind
+"""Writer / Story Architect — backed by Anthropic Claude.
+
+Reads the seed source material and produces the screenplay, scene breakdown,
+and the list of assets (environments, characters, props) to build. Also writes
+the per-asset creative brief. No hardcoded story content lives here anymore.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.models.entities import Asset, AssetKind, Project
+from app.providers.base import ProviderError, anthropic_json
+
+SEED_DIR = Path(__file__).resolve().parents[3] / "seed"
+
+WRITER_SYSTEM = (
+    "You are the Screenwriter and Story Architect of an autonomous AI movie studio. "
+    "Analyze the source story and produce a screenplay summary, a scene breakdown, and "
+    "the list of visual assets to build. For each character, environment, and prop you "
+    "name, you will later write a tight creative brief, but do NOT write image prompts. "
+    "Maintain continuity and respect the project's style bible."
+)
 
 
-SEED_SCENES = [
-    ("kunduz-first-meeting", "Kunduz, First Meeting", "Camp courtyard, rooftop nights, schools beginning.", "Afghan Camp"),
-    ("the-kiss-threat", "The Kiss and the Threat", "School opening, the relationship, the crucified-girl letter.", "Village School"),
-    ("the-transfer", "The Transfer", "P signs the order that saves LM by breaking her heart.", "Afghan Camp"),
-    ("clearance-granted", "Clearance Granted", "The truck strike and P's collapse into guilt.", "Desert Road"),
-    ("syrian-border", "Reunion at the Syrian Border", "LM finds the ruined P in 2025.", "Syrian Border Center"),
-    ("resignation", "Resignation", "LM declines the medal and leaves the military.", "Berlin Office"),
-    ("plea-for-punishment", "Petty Crime as a Plea", "Perfume, break-ins, and the toy gun.", "Munich Streets"),
-    ("the-ward", "The Ward", "Therapy, forbidden contact, and the final attempt.", "Psychiatric Ward"),
-    ("coda", "Coda", "Kabul, Berlin, Munich, and the jasmine letter.", "Munich Apartment"),
-]
+def _read_seed() -> str:
+    parts: list[str] = []
+    for name in ("story.md", "character_bible.md", "story-source.txt"):
+        path = SEED_DIR / name
+        if path.exists():
+            parts.append(f"# FILE: {name}\n{path.read_text(encoding='utf-8')}")
+    if not parts:
+        raise ProviderError(f"No seed source material found in {SEED_DIR}.")
+    return "\n\n".join(parts)
 
 
-SEED_ASSETS = [
-    (
-        AssetKind.ENVIRONMENT,
-        "Afghan Camp (Kunduz, 2010)",
-        "Dusty fortified camp with tents, watchtower, generators, and rooftop night conversations.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Munich Apartment (present)",
-        "Quiet aged interior where the jasmine-scented letter is opened.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Syrian Border Center (2025)",
-        "Air-traffic-control room with screens, fluorescent fatigue, and desert beyond the glass.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Psychiatric Ward",
-        "Cold institutional ward, overlit corridors, clipped routines, and emotional isolation.",
-    ),
-    (
-        AssetKind.ENVIRONMENT,
-        "Desert Road of the Truck Strike",
-        "Heat-hazed road, dust, drone distance, and moral aftermath rather than spectacle.",
-    ),
-    (
-        AssetKind.CHARACTER,
-        "Major P",
-        "Disciplined officer in 2010; ruined, gray, and swollen by guilt in 2025.",
-    ),
-    (
-        AssetKind.CHARACTER,
-        "Lieutenant LM (Lili Marleen)",
-        "Aristocratic, rebellious idealist who builds schools and later unravels under the war's weight.",
-    ),
-    (AssetKind.PROP, "Threatening Letter", "A newspaper-hidden symbol of a crucified girl; no words needed."),
-    (AssetKind.PROP, "Jasmine-Scented Letter", "The coda letter, intimate and devastating."),
-    (AssetKind.PROP, "Cracked Door", "The splinter P touches after LM leaves."),
-]
-
-
-def screenplay_excerpt() -> str:
-    return (
-        "The screenplay opens in Kunduz with wind carrying dust over a fortified camp. "
-        "Major P watches Lieutenant LM cross the courtyard, all new uniform and impossible conviction. "
-        "Their bond grows through school-building, rooftop talks, and a love neither can safely name. "
-        "When P discovers the Taliban threat against her, he engineers her transfer and accepts being hated. "
-        "Three weeks later his clearance order kills five boys beneath a truck, splitting the film into the "
-        "sharp 2010 memory and the ruined 2025 aftermath. The final movement follows LM's resignation, "
-        "institutional collapse, and the Munich letter that leaves P alone with jasmine and ash."
+async def analyze_story(project: Project) -> dict:
+    """Return {screenplay, scenes:[...], assets:[...]} derived from the seed."""
+    source = _read_seed()
+    user = (
+        f"Project title: {project.name}\n"
+        f"Style bible: {project.style}\n"
+        f"Director instruction: {project.instruction or 'Adapt the source faithfully.'}\n\n"
+        "Source material:\n"
+        f"{source}\n\n"
+        "Return JSON with this exact shape:\n"
+        "{\n"
+        '  "screenplay": "3-6 sentence prose summary of the screenplay arc",\n'
+        '  "scenes": [{"act_no": 1, "scene_no": 1, "slug": "kebab-case", "title": "...",\n'
+        '              "summary": "...", "location": "...", "time_of_day": "day|night|dusk",\n'
+        '              "shots": [{"shot_no": 1, "description": "...", "camera": "wide|medium|close", "duration_s": 8}]}],\n'
+        '  "assets": [{"kind": "ENVIRONMENT|CHARACTER|PROP", "name": "...", "description": "..."}]\n'
+        "}\n"
+        "Cover every chapter as at least one scene and every key place/character/prop as an asset."
     )
+    data = await anthropic_json(WRITER_SYSTEM, user)
+    if not data.get("scenes") or not data.get("assets"):
+        raise ProviderError("Writer returned no scenes or assets.")
+    return data
 
 
-def brief_for(kind: AssetKind, name: str, description: str) -> str:
-    return (
-        f"{name} must read in Waltz with Bashir style: rotoscoped-real anatomy, hand-drawn ink, "
-        f"muted sepia/olive palette, high-contrast hatching, and restrained war-memory tone. "
-        f"Core brief: {description}"
+async def write_brief(project: Project, asset: Asset) -> str:
+    user = (
+        f"Project: {project.name}\nStyle bible: {project.style}\n"
+        f"Asset kind: {asset.kind.value}\nName: {asset.name}\nDescription: {asset.description}\n\n"
+        "Write the creative brief for this asset: what it must convey on screen, mood, period, "
+        "key visual notes, and continuity constraints — enough for an Art Director to write an "
+        "image prompt. Return JSON: {\"brief\": \"...\"}"
     )
+    data = await anthropic_json(WRITER_SYSTEM, user)
+    brief = data.get("brief", "").strip()
+    if not brief:
+        raise ProviderError(f"Writer returned an empty brief for {asset.name}.")
+    return brief

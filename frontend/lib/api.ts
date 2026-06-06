@@ -13,14 +13,37 @@ export function getApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 }
 
+export type ProjectStatus = "DRAFT" | "AWAITING_APPROVAL" | "RUNNING" | "PAUSED" | "COMPLETED";
+
 export type Project = {
   id: string;
   name: string;
   style: string;
   instruction: string;
-  status: "DRAFT" | "RUNNING" | "PAUSED";
+  status: ProjectStatus;
   roadmap: Record<string, unknown>;
   counts: Record<string, number>;
+};
+
+export type PlanItem = {
+  key: string;
+  kind?: string;
+  label: string;
+  target_id?: string;
+};
+
+export type PhaseStatus = "PROPOSED" | "RUNNING" | "REVIEWING" | "DONE" | "REJECTED" | "FAILED";
+
+export type Phase = {
+  id: string;
+  phase_no: number;
+  key: string;
+  title: string;
+  description: string;
+  status: PhaseStatus;
+  plan: PlanItem[];
+  result: Record<string, unknown>;
+  created_at: string;
 };
 
 export type EventRecord = {
@@ -34,6 +57,7 @@ export type EventRecord = {
 
 export type Task = {
   id: string;
+  phase_id?: string | null;
   type: string;
   owner_agent: string;
   status: string;
@@ -96,9 +120,10 @@ export type Scene = {
 export type ProjectState = {
   project: Project;
   counts: Record<string, number>;
+  phases: Phase[];
+  current_phase: Phase | null;
   tasks: Task[];
   events: EventRecord[];
-  activity: Record<string, string>;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -117,31 +142,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function bootProject(): Promise<Project> {
   const projects = await request<Project[]>("/api/projects");
-  let project = projects[0];
-  if (!project) {
-    project = await request<Project>("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        name: "Lili Marleen - Damascus",
-        style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
-      })
-    });
-  }
-  if (!project.counts?.scenes) {
-    return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
-  }
-  return project;
-}
-
-export async function createSeedProject(): Promise<Project> {
-  const project = await request<Project>("/api/projects", {
+  if (projects[0]) return projects[0];
+  return request<Project>("/api/projects", {
     method: "POST",
     body: JSON.stringify({
       name: "Lili Marleen - Damascus",
       style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
     })
   });
-  return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
 }
 
 export const api = {
@@ -149,6 +157,10 @@ export const api = {
   start: (projectId: string) => request<Project>(`/api/projects/${projectId}/start`, { method: "POST" }),
   pause: (projectId: string) => request<Project>(`/api/projects/${projectId}/pause`, { method: "POST" }),
   resume: (projectId: string) => request<Project>(`/api/projects/${projectId}/resume`, { method: "POST" }),
+  phases: (projectId: string) => request<Phase[]>(`/api/projects/${projectId}/phases`),
+  approvePhase: (phaseId: string) => request<Phase>(`/api/phases/${phaseId}/approve`, { method: "POST" }),
+  rejectPhase: (phaseId: string, notes: string) =>
+    request<Phase>(`/api/phases/${phaseId}/reject`, { method: "POST", body: JSON.stringify({ notes }) }),
   command: (projectId: string, text: string) =>
     request<{ applied: boolean; status: string }>(`/api/projects/${projectId}/command`, {
       method: "POST",

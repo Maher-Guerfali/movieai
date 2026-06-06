@@ -1,4 +1,4 @@
-from html import escape
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
@@ -7,9 +7,29 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.utils import to_asset_out, to_project_out
 from app.db.session import get_db
 from app.events.bus import emit, hub
-from app.models.entities import Asset, AssetKind, AssetState, Event, Image, Project, ProjectStatus, Scene, Task
-from app.orchestrator.service import ensure_seed_project, project_counts, start_project
-from app.schemas.api import AssetOut, AssetPatch, CommandRequest, EventOut, ProjectCreate, ProjectOut, RejectRequest, SceneOut, SeedRequest, TaskOut
+from app.models.entities import Asset, AssetKind, AssetState, Event, Image, Phase, PhaseStatus, Project, ProjectStatus, Scene, Task
+from app.orchestrator.service import (
+    GENERATED_DIR,
+    approve_phase,
+    project_counts,
+    propose_next_phase,
+    regenerate_asset,
+    reject_phase,
+    start_project,
+)
+from app.schemas.api import (
+    AssetOut,
+    AssetPatch,
+    CommandRequest,
+    EventOut,
+    PhaseOut,
+    ProjectCreate,
+    ProjectOut,
+    RejectRequest,
+    SceneOut,
+    SeedRequest,
+    TaskOut,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -45,11 +65,12 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> ProjectOut:
 
 @router.post("/projects/{project_id}/seed", response_model=ProjectOut)
 async def seed_project(project_id: str, payload: SeedRequest, db: Session = Depends(get_db)) -> ProjectOut:
+    """Record the Director's top instruction. Content is produced by phases, not seeded."""
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
     project.instruction = payload.instruction
-    await ensure_seed_project(db, project)
+    db.commit()
     db.refresh(project)
     return to_project_out(db, project)
 
@@ -80,10 +101,40 @@ async def resume(project_id: str, db: Session = Depends(get_db)) -> ProjectOut:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    project.status = ProjectStatus.RUNNING
-    db.commit()
-    await emit(db, project.id, "project.resumed", "director", {})
+    await start_project(db, project)
+    db.refresh(project)
     return to_project_out(db, project)
+
+
+# --------------------------------------------------------------------------- #
+# Phases
+# --------------------------------------------------------------------------- #
+@router.get("/projects/{project_id}/phases", response_model=list[PhaseOut])
+def phases(project_id: str, db: Session = Depends(get_db)) -> list[PhaseOut]:
+    rows = db.scalars(select(Phase).where(Phase.project_id == project_id).order_by(Phase.phase_no)).all()
+    return [PhaseOut.model_validate(row) for row in rows]
+
+
+@router.post("/phases/{phase_id}/approve", response_model=PhaseOut)
+async def approve_phase_route(phase_id: str, db: Session = Depends(get_db)) -> PhaseOut:
+    phase = db.get(Phase, phase_id)
+    if not phase:
+        raise HTTPException(404, "Phase not found")
+    project = db.get(Project, phase.project_id)
+    await approve_phase(db, project, phase)
+    db.refresh(phase)
+    return PhaseOut.model_validate(phase)
+
+
+@router.post("/phases/{phase_id}/reject", response_model=PhaseOut)
+async def reject_phase_route(phase_id: str, payload: RejectRequest, db: Session = Depends(get_db)) -> PhaseOut:
+    phase = db.get(Phase, phase_id)
+    if not phase:
+        raise HTTPException(404, "Phase not found")
+    project = db.get(Project, phase.project_id)
+    await reject_phase(db, project, phase, payload.notes)
+    db.refresh(phase)
+    return PhaseOut.model_validate(phase)
 
 
 @router.get("/projects/{project_id}/state")
@@ -91,20 +142,20 @@ def project_state(project_id: str, db: Session = Depends(get_db)) -> dict:
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.priority)).all()
-    events = db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(12)).all()
+    tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.created_at)).all()
+    events = db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(15)).all()
+    all_phases = db.scalars(select(Phase).where(Phase.project_id == project_id).order_by(Phase.phase_no)).all()
+    current = next(
+        (p for p in all_phases if p.status in (PhaseStatus.PROPOSED, PhaseStatus.RUNNING, PhaseStatus.REVIEWING, PhaseStatus.FAILED)),
+        None,
+    )
     return {
         "project": to_project_out(db, project),
         "counts": project_counts(db, project_id),
+        "phases": [PhaseOut.model_validate(p) for p in all_phases],
+        "current_phase": PhaseOut.model_validate(current) if current else None,
         "tasks": [TaskOut.model_validate(task) for task in tasks],
         "events": [EventOut.model_validate(event) for event in events],
-        "activity": {
-            "producer": "Maintaining the seed production roadmap",
-            "writer": "Screenplay and scene tree complete",
-            "art_director": "Seed prompts and visual references prepared",
-            "critic": "Reviewing references against the style bible",
-            "asset_manager": "Filing approved assets and prompt history",
-        },
     }
 
 
@@ -159,30 +210,6 @@ def asset_detail(asset_id: str, db: Session = Depends(get_db)) -> AssetOut:
     return to_asset_out(asset)
 
 
-@router.get("/assets/{asset_id}/images")
-def asset_images(asset_id: str, db: Session = Depends(get_db)) -> list:
-    asset = db.scalar(select(Asset).where(Asset.id == asset_id).options(selectinload(Asset.images)))
-    if not asset:
-        raise HTTPException(404, "Asset not found")
-    return to_asset_out(asset).images
-
-
-@router.get("/assets/{asset_id}/prompts")
-def asset_prompts(asset_id: str, db: Session = Depends(get_db)) -> list:
-    asset = db.scalar(select(Asset).where(Asset.id == asset_id).options(selectinload(Asset.prompts)))
-    if not asset:
-        raise HTTPException(404, "Asset not found")
-    return asset.prompts
-
-
-@router.get("/assets/{asset_id}/reviews")
-def asset_reviews(asset_id: str, db: Session = Depends(get_db)) -> list:
-    asset = db.scalar(select(Asset).where(Asset.id == asset_id).options(selectinload(Asset.reviews)))
-    if not asset:
-        raise HTTPException(404, "Asset not found")
-    return asset.reviews
-
-
 @router.post("/projects/{project_id}/command")
 async def command(project_id: str, payload: CommandRequest, db: Session = Depends(get_db)) -> dict:
     project = db.get(Project, project_id)
@@ -191,10 +218,11 @@ async def command(project_id: str, payload: CommandRequest, db: Session = Depend
     lowered = payload.text.lower()
     if "pause" in lowered:
         project.status = ProjectStatus.PAUSED
+        db.commit()
     elif "resume" in lowered or "continue" in lowered or "start" in lowered:
-        project.status = ProjectStatus.RUNNING
-    db.commit()
+        await start_project(db, project)
     await emit(db, project_id, "director.command_applied", "director", {"command": payload.text})
+    db.refresh(project)
     return {"applied": True, "status": project.status.value}
 
 
@@ -237,19 +265,18 @@ async def reject_asset(asset_id: str, payload: RejectRequest, db: Session = Depe
 
 
 @router.post("/assets/{asset_id}/regenerate", response_model=AssetOut)
-async def regenerate_asset(asset_id: str, db: Session = Depends(get_db)) -> AssetOut:
+async def regenerate(asset_id: str, db: Session = Depends(get_db)) -> AssetOut:
     asset = db.get(Asset, asset_id)
     if not asset:
         raise HTTPException(404, "Asset not found")
-    asset.state = AssetState.GENERATING
-    db.commit()
-    await emit(db, asset.project_id, "generation.queued", "director", {"asset_id": asset.id, "forced": True})
+    project = db.get(Project, asset.project_id)
+    await regenerate_asset(db, project, asset)
     return asset_detail(asset_id, db)
 
 
 @router.get("/projects/{project_id}/tasks", response_model=list[TaskOut])
 def tasks(project_id: str, db: Session = Depends(get_db)) -> list[TaskOut]:
-    rows = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.priority)).all()
+    rows = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.created_at)).all()
     return [TaskOut.model_validate(row) for row in rows]
 
 
@@ -274,31 +301,10 @@ def image(image_id: str, db: Session = Depends(get_db)) -> Response:
     row = db.get(Image, image_id)
     if not row:
         raise HTTPException(404, "Image not found")
-    asset = db.get(Asset, row.asset_id)
-    title = escape(asset.name if asset else "AI Movie Studio")
-    palette = "#d7c39b" if row.state == AssetState.APPROVED else "#9aa685"
-    svg = f"""
-    <svg xmlns="http://www.w3.org/2000/svg" width="{row.width}" height="{row.height}" viewBox="0 0 {row.width} {row.height}">
-      <defs>
-        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0" stop-color="#171613"/>
-          <stop offset="0.5" stop-color="#473f31"/>
-          <stop offset="1" stop-color="#8b7650"/>
-        </linearGradient>
-        <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse">
-          <path d="M0 10 L10 0" stroke="#0d0d0b" stroke-width="1" opacity=".25"/>
-        </pattern>
-      </defs>
-      <rect width="100%" height="100%" fill="url(#g)"/>
-      <rect width="100%" height="100%" fill="url(#hatch)" opacity=".7"/>
-      <circle cx="800" cy="140" r="190" fill="{palette}" opacity=".22"/>
-      <path d="M0 438 C210 390 360 448 540 408 C745 362 824 410 1024 354 L1024 576 L0 576 Z" fill="#11110f" opacity=".74"/>
-      <text x="54" y="82" fill="#efe7d2" font-family="Arial, sans-serif" font-size="38" font-weight="700">{title}</text>
-      <text x="56" y="128" fill="#d7c39b" font-family="Arial, sans-serif" font-size="22">mock ComfyUI reference · seed {row.seed}</text>
-      <text x="56" y="508" fill="#efe7d2" font-family="Arial, sans-serif" font-size="20">Waltz with Bashir style bible · ink · sepia · olive · restraint</text>
-    </svg>
-    """
-    return Response(svg, media_type="image/svg+xml")
+    path = Path(GENERATED_DIR) / f"{image_id}.png"
+    if not path.exists():
+        raise HTTPException(404, "Image file not available")
+    return Response(path.read_bytes(), media_type="image/png")
 
 
 @router.websocket("/ws/projects/{project_id}")
