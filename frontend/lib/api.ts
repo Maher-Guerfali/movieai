@@ -115,36 +115,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function bootProject(): Promise<Project> {
+export async function loadProject(): Promise<Project | null> {
   const projects = await request<Project[]>("/api/projects");
-  let project = projects[0];
-  if (!project) {
-    project = await request<Project>("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        name: "Lili Marleen - Damascus",
-        style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
-      })
-    });
-  }
-  if (!project.counts?.scenes) {
-    return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
-  }
-  return project;
+  return projects[0] ?? null;
 }
 
-export async function createSeedProject(): Promise<Project> {
-  const project = await request<Project>("/api/projects", {
+export async function createProject(name: string, style: string): Promise<Project> {
+  return request<Project>("/api/projects", {
     method: "POST",
-    body: JSON.stringify({
-      name: "Lili Marleen - Damascus",
-      style: "Waltz with Bashir - inked rotoscope, muted olive and sepia"
-    })
+    body: JSON.stringify({ name, style })
   });
-  return request<Project>(`/api/projects/${project.id}/seed`, { method: "POST", body: JSON.stringify({}) });
 }
+
+export type AppSettings = {
+  comfyui_url: string;
+  use_mock_ai: boolean;
+  openai_model: string;
+  anthropic_model: string;
+  google_model: string;
+  openai_configured: boolean;
+  anthropic_configured: boolean;
+  google_configured: boolean;
+};
 
 export const api = {
+  getSettings: () => request<AppSettings>("/api/settings"),
   getState: (projectId: string) => request<ProjectState>(`/api/projects/${projectId}/state`),
   start: (projectId: string) => request<Project>(`/api/projects/${projectId}/start`, { method: "POST" }),
   pause: (projectId: string) => request<Project>(`/api/projects/${projectId}/pause`, { method: "POST" }),

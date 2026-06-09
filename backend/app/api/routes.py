@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.utils import to_asset_out, to_project_out
+from app.core.config import settings
 from app.db.session import get_db
 from app.events.bus import emit, hub
 from app.models.entities import Asset, AssetKind, AssetState, Event, Image, Project, ProjectStatus, Scene, Task
@@ -17,6 +18,20 @@ router = APIRouter(prefix="/api")
 @router.get("/health")
 def health() -> dict:
     return {"ok": True, "service": "movieai-backend"}
+
+
+@router.get("/settings")
+def get_settings() -> dict:
+    return {
+        "comfyui_url": settings.comfyui_url,
+        "use_mock_ai": settings.use_mock_ai,
+        "openai_model": settings.openai_model,
+        "anthropic_model": settings.anthropic_model,
+        "google_model": settings.google_model,
+        "openai_configured": bool(settings.openai_api_key),
+        "anthropic_configured": bool(settings.anthropic_api_key),
+        "google_configured": bool(settings.google_api_key),
+    }
 
 
 @router.post("/projects", response_model=ProjectOut)
@@ -93,18 +108,20 @@ def project_state(project_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(404, "Project not found")
     tasks = db.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.priority)).all()
     events = db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(12)).all()
+    activity: dict[str, str] = {}
+    for event in events:
+        actor = event.actor
+        if actor not in activity:
+            payload = event.payload or {}
+            label = payload.get("label") if isinstance(payload, dict) else None
+            activity[actor] = label or event.type.replace(".", " ").title()
+
     return {
         "project": to_project_out(db, project),
         "counts": project_counts(db, project_id),
         "tasks": [TaskOut.model_validate(task) for task in tasks],
         "events": [EventOut.model_validate(event) for event in events],
-        "activity": {
-            "producer": "Maintaining the seed production roadmap",
-            "writer": "Screenplay and scene tree complete",
-            "art_director": "Seed prompts and visual references prepared",
-            "critic": "Reviewing references against the style bible",
-            "asset_manager": "Filing approved assets and prompt history",
-        },
+        "activity": activity,
     }
 
 

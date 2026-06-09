@@ -18,7 +18,7 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
+import { AppSettings, Asset, EventRecord, Project, ProjectState, Scene, api, createProject, loadProject, getApiBase } from "@/lib/api";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
 
@@ -64,6 +64,9 @@ export default function Dashboard() {
   const [screenplay, setScreenplay] = useState("");
   const [command, setCommand] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectStyle, setNewProjectStyle] = useState("");
+  const [creating, setCreating] = useState(false);
 
   async function refresh(activeProject = project) {
     if (!activeProject) return;
@@ -81,13 +84,29 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    bootProject()
-      .then(async (created) => {
-        setProject(created);
-        await refresh(created);
+    loadProject()
+      .then(async (loaded) => {
+        if (loaded) {
+          setProject(loaded);
+          await refresh(loaded);
+        }
       })
       .catch((err: Error) => setError(err.message));
   }, []);
+
+  async function handleCreateProject() {
+    if (!newProjectName.trim()) return;
+    setCreating(true);
+    try {
+      const created = await createProject(newProjectName.trim(), newProjectStyle.trim());
+      setProject(created);
+      await refresh(created);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create project");
+    } finally {
+      setCreating(false);
+    }
+  }
 
   useEffect(() => {
     if (!project) return;
@@ -133,6 +152,49 @@ export default function Dashboard() {
     await refresh(project);
   }
 
+  if (error) {
+    return (
+      <div className="studio-shell">
+        <main className="workspace">
+          <section className="empty-state">
+            <h2>Backend is not running</h2>
+            <p>Start the FastAPI server on port 8000, then refresh this dashboard. Details: {error}</p>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
+  if (!project) {
+    return (
+      <div className="studio-shell">
+        <main className="workspace">
+          <section className="empty-state">
+            <h2>AI Movie Studio</h2>
+            <p>No projects yet. Create your first project to get started.</p>
+            <div className="create-project-form">
+              <input
+                placeholder="Project name (e.g. My Film)"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+              />
+              <input
+                placeholder="Visual style (e.g. noir, animated, live action)"
+                value={newProjectStyle}
+                onChange={(e) => setNewProjectStyle(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateProject()}
+              />
+              <button className="primary" onClick={handleCreateProject} disabled={creating || !newProjectName.trim()}>
+                <Play size={16} /> {creating ? "Creating…" : "Create Project"}
+              </button>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="studio-shell">
       <aside className="sidebar">
@@ -161,13 +223,13 @@ export default function Dashboard() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <h1>{project?.name ?? "Lili Marleen - Damascus"}</h1>
-            <p>{project?.style ?? "Waltz with Bashir style bible"}</p>
+            <h1>{project.name}</h1>
+            <p>{project.style}</p>
           </div>
           <div className="top-actions">
-            <span className={stateClass[project?.status ?? "DRAFT"]}>{project?.status ?? "DRAFT"}</span>
-            <button className="icon-button" onClick={togglePause} title={project?.status === "RUNNING" ? "Pause project" : "Resume project"}>
-              {project?.status === "RUNNING" ? <Pause size={17} /> : <Play size={17} />}
+            <span className={stateClass[project.status]}>{project.status}</span>
+            <button className="icon-button" onClick={togglePause} title={project.status === "RUNNING" ? "Pause project" : "Resume project"}>
+              {project.status === "RUNNING" ? <Pause size={17} /> : <Play size={17} />}
             </button>
             <button className="icon-button" title="Voice command"><Mic size={17} /></button>
             <div className="command">
@@ -178,14 +240,7 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {error ? (
-          <section className="empty-state">
-            <h2>Backend is not running</h2>
-            <p>Start the FastAPI server on port 8000, then refresh this dashboard. Details: {error}</p>
-          </section>
-        ) : (
-          <section className="content">{renderView()}</section>
-        )}
+        <section className="content">{renderView()}</section>
       </main>
     </div>
   );
@@ -380,20 +435,38 @@ function Notifications({ events }: { events: EventRecord[] }) {
 }
 
 function SettingsView() {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
+  useEffect(() => {
+    api.getSettings().then(setSettings).catch(() => undefined);
+  }, []);
+
+  if (!settings) return <section className="panel"><p>Loading settings…</p></section>;
+
+  const rows = [
+    ["Producer / Art Director", "OpenAI", settings.openai_model, settings.openai_configured],
+    ["Writer", "Anthropic", settings.anthropic_model, settings.anthropic_configured],
+    ["Critic", "Google", settings.google_model, settings.google_configured],
+    ["Image backend", "ComfyUI", settings.comfyui_url, !settings.use_mock_ai],
+  ] as [string, string, string, boolean][];
+
   return (
     <section className="settings-grid">
-      {[
-        ["Producer / Art Director", "OpenAI", "gpt-4.1"],
-        ["Writer", "Anthropic", "claude-3-7-sonnet-latest"],
-        ["Critic", "Google", "gemini-2.5-pro"],
-        ["Image backend", "ComfyUI", "http://localhost:8188"]
-      ].map(([agent, provider, model]) => (
+      {rows.map(([agent, provider, model, configured]) => (
         <div className="panel setting" key={agent}>
           <span>{agent}</span>
           <strong>{provider}</strong>
           <p>{model}</p>
+          <small className={configured ? "state approved" : "state draft"}>{configured ? "configured" : "not configured"}</small>
         </div>
       ))}
+      {settings.use_mock_ai && (
+        <div className="panel setting" style={{ gridColumn: "1 / -1" }}>
+          <span>Mode</span>
+          <strong>Mock AI</strong>
+          <p>Set USE_MOCK_AI=false and provide API keys to enable real AI generation.</p>
+        </div>
+      )}
     </section>
   );
 }
