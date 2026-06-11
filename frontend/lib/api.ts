@@ -86,6 +86,7 @@ export type Scene = {
   id: string;
   act_no: number;
   scene_no: number;
+  slug: string;
   title: string;
   summary: string;
   location: string;

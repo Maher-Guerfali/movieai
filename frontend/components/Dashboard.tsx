@@ -17,7 +17,7 @@ import {
   UserRound,
   Wand2
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Asset, EventRecord, Project, ProjectState, Scene, api, bootProject, getApiBase } from "@/lib/api";
 
 type View = "Overview" | "Story" | "Characters" | "Environments" | "Props" | "Storyboards" | "Animations" | "Tasks" | "Notifications" | "Settings";
@@ -64,6 +64,7 @@ export default function Dashboard() {
   const [screenplay, setScreenplay] = useState("");
   const [command, setCommand] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const refreshRef = useRef<(activeProject?: Project | null) => Promise<void>>();
 
   async function refresh(activeProject = project) {
     if (!activeProject) return;
@@ -79,6 +80,8 @@ export default function Dashboard() {
       setScreenplay((await api.screenplay(activeProject.id)).screenplay);
     }
   }
+
+  refreshRef.current = refresh;
 
   useEffect(() => {
     bootProject()
@@ -98,7 +101,7 @@ export default function Dashboard() {
     if (!project) return;
     const wsBase = getApiBase().replace(/^http/, "ws");
     const socket = new WebSocket(`${wsBase}/api/ws/projects/${project.id}`);
-    socket.onmessage = () => refresh(project).catch(() => undefined);
+    socket.onmessage = () => refreshRef.current?.(project).catch(() => undefined);
     return () => socket.close();
   }, [project?.id]);
 
